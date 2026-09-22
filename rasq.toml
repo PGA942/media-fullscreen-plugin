@@ -1,0 +1,10 @@
+schema = "rasq.workspace/1"
+sdk = "0.1.0"
+
+[author]
+namespace = "sample"
+
+[[plugins]]
+name = "media-fullscreen-plugin"
+slot = "viewer.overlay"
+id = "sample.media-fullscreen"
