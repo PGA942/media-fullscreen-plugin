@@ -10,19 +10,23 @@
 //! | FOW のボタン | `qr.copy` / `qr.browser` / `qr.mute` / `qr.close` → `clipboard.set` / `url.open` / `mute.add` / `fow.close`(+ `toast`) |
 //! | 全画面が閉じた | `viewer.close` → FOW を閉じて状態を捨てる |
 //!
-//! 契約: `../CONTRACT.md` §2.4(viewer.overlay)/ §3(`Box` ノード、Stack 内の `left/top`)/ §4(ホスト関数)。
-//! ビルド: `cargo build --release --target wasm32-unknown-unknown -p media-fullscreen-plugin`
+//! 契約: 契約 v0.13、`../../CONTRACT.md` → SDK の `docs/slots.md` §2.4(viewer.overlay)/ §3(`Box` ノード、
+//! Stack 内の `left/top`)/ §4(ホスト関数)。全画面アクションバーのボタン宣言(v0.9)は `manifest.json` の
+//! `actions[].slot = "viewer.overlay"`。
+//! ビルド・確認: `rasq check` / `rasq test` / `rasq call media-fullscreen-plugin viewer.open …` / `rasq build --raw`
 
 use base64::Engine;
 use rasq_plugin_kit::{
-    err, fow_spec, host, manifest, rasq_plugin, rrl,
+    err, fow_spec, host, rasq_plugin, rrl,
     serde_json::{json, Value},
     unsupported, Surface,
 };
 use std::sync::Mutex;
 
-const PLUGIN_ID: &str = "sample.media-fullscreen";
-const VERSION: &str = "0.1.0";
+/// `plugin.manifest` の答え = `manifest.json`(名前 / 版 / 説明 / 権限 / ボタン宣言はあちらを直す)。
+fn manifest() -> Value {
+    rasq_plugin_kit::serde_json::from_str(include_str!("../manifest.json")).expect("manifest.json")
+}
 
 /// 検出時にこの長辺まで縮小してから探す(速度のため。座標は元の `width/height` 画素系に戻す)。
 const DETECT_MAX_SIDE: u32 = 800;
@@ -356,15 +360,7 @@ fn viewer_close() -> Result<Value, Value> {
 
 fn handle(fn_name: &str, args: Value) -> Result<Value, Value> {
     match fn_name {
-        "plugin.manifest" => Ok(manifest(
-            PLUGIN_ID,
-            "QR コード検出(サンプル)",
-            VERSION,
-            "mediaViewer",
-            "全画面ビューワーの画像から QR コードを見つけて枠を重ね、タップでコピー / 開く / ミュート",
-            &["viewer.overlay"],
-            &["fow.widget", "mute.words"],
-        )),
+        "plugin.manifest" => Ok(manifest()),
         "viewer.open" => viewer_open(&args),
         "viewer.close" => viewer_close(),
         "qr.copy" => qr_copy(),
@@ -463,6 +459,28 @@ mod tests {
         assert_eq!(m["kind"], json!("mediaViewer"));
         assert_eq!(m["slots"], json!(["viewer.overlay"]));
         assert_eq!(m["permissions"], json!(["fow.widget", "mute.words"]));
+    }
+
+    /// `plugin.manifest` は `manifest.json` そのもの(`rasq check` の往復検査と同じ突き合わせ)。
+    #[test]
+    fn manifest_matches_manifest_json() {
+        let _g = lock();
+        let m = call_native("plugin.manifest", json!({})).unwrap();
+        let file: Value = rasq_plugin_kit::serde_json::from_str(include_str!("../manifest.json")).unwrap();
+        assert_eq!(m, file);
+    }
+
+    /// 全画面アクションバーのボタン宣言(v0.9): `actions[].slot` は宣言したスロットのものだけ。
+    #[test]
+    fn declared_actions_are_viewer_overlay() {
+        let _g = lock();
+        let m = call_native("plugin.manifest", json!({})).unwrap();
+        let actions = m["actions"].as_array().expect("actions が宣言されていない");
+        assert!(!actions.is_empty());
+        for a in actions {
+            assert_eq!(a["slot"], json!("viewer.overlay"), "actions[].slot: {a}");
+            assert!(a["id"].is_string() && a["label"].is_string(), "id / label が要る: {a}");
+        }
     }
 
     #[test]
