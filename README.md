@@ -69,8 +69,8 @@ viewer.close {token}                     → FOW を閉じて状態を捨てる 
 ```sh
 rasq check                 # wasm32 ビルド → export 検査 → plugin.manifest 往復 → スキーマ / 登録簿 → cargo test
 rasq test                  # cargo test だけ
-rasq build --raw --no-sign # dist/sample.media-fullscreen-0.1.0.rasqpkg と dist/media_fullscreen_plugin.wasm
-rasq inspect dist/sample.media-fullscreen-0.1.0.rasqpkg
+rasq build --raw --no-sign # dist/sample.media-fullscreen-0.2.0.rasqpkg と dist/media_fullscreen_plugin.wasm
+rasq inspect dist/sample.media-fullscreen-0.2.0.rasqpkg
 ```
 
 ```
@@ -82,9 +82,9 @@ plugins/media-fullscreen-plugin:
 $ cargo test
 ... test result: ok. 10 passed; 0 failed
 
-$ rasq inspect dist/sample.media-fullscreen-0.1.0.rasqpkg
+$ rasq inspect dist/sample.media-fullscreen-0.2.0.rasqpkg
 bundle: rasq.bundle/1 sdk 0.1.0
-root:   sample.media-fullscreen 0.1.0 (mediaViewer)
+root:   sample.media-fullscreen 0.2.0 (mediaViewer)
 files:  bundle.json / manifest.json / media_fullscreen_plugin.wasm / SHA512SUMS
 目次と中身: ok
 ```
