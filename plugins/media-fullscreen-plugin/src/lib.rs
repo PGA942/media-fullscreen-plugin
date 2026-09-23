@@ -10,9 +10,9 @@
 //! | FOW のボタン | `qr.copy` / `qr.browser` / `qr.mute` / `qr.close` → `clipboard.set` / `url.open` / `mute.add` / `fow.close`(+ `toast`) |
 //! | 全画面が閉じた | `viewer.close` → FOW を閉じて状態を捨てる |
 //!
-//! 契約: 契約 v0.13、`../../CONTRACT.md` → SDK の `docs/slots.md` §2.4(viewer.overlay)/ §3(`Box` ノード、
+//! 契約: 契約 v0.14、`../../CONTRACT.md` → SDK の `docs/slots.md` §2.4(viewer.overlay)/ §3(`Box` ノード、
 //! Stack 内の `left/top`)/ §4(ホスト関数)。全画面アクションバーのボタン宣言(v0.9)は `manifest.json` の
-//! `actions[].slot = "viewer.overlay"`。
+//! `actions[].slot = "viewer.overlay"`。初期状態(v0.14 temp、§2.11)は同じ項目の `auto: true`(全画面が開いた瞬間にオン)。
 //! ビルド・確認: `rasq check` / `rasq test` / `rasq call media-fullscreen-plugin viewer.open …` / `rasq build --raw`
 
 use base64::Engine;
@@ -471,6 +471,7 @@ mod tests {
     }
 
     /// 全画面アクションバーのボタン宣言(v0.9): `actions[].slot` は宣言したスロットのものだけ。
+    /// 初期状態(v0.14 temp): `auto: true` = 全画面が開いた瞬間にオン(ホスト既定と同じだが、宣言で明示する)。
     #[test]
     fn declared_actions_are_viewer_overlay() {
         let _g = lock();
@@ -480,6 +481,7 @@ mod tests {
         for a in actions {
             assert_eq!(a["slot"], json!("viewer.overlay"), "actions[].slot: {a}");
             assert!(a["id"].is_string() && a["label"].is_string(), "id / label が要る: {a}");
+            assert_eq!(a["auto"], json!(true), "actions[].auto(初期状態)を明示する: {a}");
         }
     }
 
