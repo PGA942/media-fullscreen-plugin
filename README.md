@@ -2,11 +2,12 @@
 
 全画面ビューワーで開いた画像の中から **QR コード**を見つけて枠を重ね、枠をタップすると
 FOW で中身(リンク / 文字列)を表示して「コピー / ブラウザで開く / ミュート」できる
-スロットプラグイン(契約 v0.13、[`docs/slots.md`](https://gitlab.com/orgate-question/rasq-sdk-sample/-/blob/main/docs/slots.md) §2.4)。
+スロットプラグイン(契約 v0.14、[`docs/slots.md`](https://gitlab.com/orgate-question/rasq-sdk-sample/-/blob/main/docs/slots.md) §2.4)。
 
 - id `sample.media-fullscreen` / kind `mediaViewer` / slots `["viewer.overlay"]`
 - permissions `["fow.widget", "mute.words"]`
 - 全画面アクションバーのボタン(v0.9): `actions[].slot = "viewer.overlay"` を 1 つ宣言(`toggle` / 「QR コード検出」/ `qr_code_scanner`)
+  + **初期状態 `auto: true`**(v0.14。下の「ボタンの初期状態」)
 - 依存: `image`(PNG / JPEG 復号)+ `rqrr`(QR 検出・復号)。ネットワークは使わない。
 
 ## このリポジトリの形(`rasq` ワークスペース)
@@ -62,6 +63,25 @@ viewer.close {token}                     → FOW を閉じて状態を捨てる 
 - ボタンの状態(処理中 / 検出あり / 検出なし / 失敗)はホストが出す(D-246)。押したときの `call` は無い
   — ホストが ON / OFF を持ち、ON のときだけ `viewer.open` に画像を渡す。
 
+## ボタンの初期状態(契約 v0.14 temp = `auto`、`docs/slots.md` §2.4 / §2.11)
+
+```json
+"actions": [
+  { "id": "toggle", "slot": "viewer.overlay", "label": "QR コード検出", "icon": "qr_code_scanner",
+    "tags": ["全画面表示", "QR"], "auto": true }
+]
+```
+
+- **`auto: true` = 全画面が開いた瞬間にオン**で始まる(開いたらすぐ QR を探す)。`false` にすると
+  オフで始まり、利用者がボタンを押したときだけ検出する。
+- `viewer.overlay` のホスト既定も `true` なので、見た目の挙動は宣言が無いときと同じ。**全画面の初期状態は
+  プラグインの宣言で決まる**ことを示すため、既定に頼らず明示している。
+- 全画面の中でボタンを押して切り替えた値は**その全画面限り**で、次に開いたときは宣言の既定(オン)に戻る
+  (v0.13 までの「切り替えを保存して次も引き継ぐ」は無くなった)。
+- **利用者はいつでも上書きできる**: ボタンの長押し「次からも自動でオン / オフ」や設定画面の「プラグインボタン」で
+  選んだ値が、この宣言より優先される。設定でボタン自体(switch)をオフにすれば、`auto` に関係なく出ない / 動かない。
+- サイドロード(未審査)で入れたときホストは `auto` を読まず、ホスト既定(`viewer.overlay` は `true`)を使う。
+
 ## ビルドと確認
 
 `rasq` CLI(`rasq-sdk-sample/rust/rasq-cli`)をパスに置いて、リポジトリのルートで:
@@ -69,8 +89,8 @@ viewer.close {token}                     → FOW を閉じて状態を捨てる 
 ```sh
 rasq check                 # wasm32 ビルド → export 検査 → plugin.manifest 往復 → スキーマ / 登録簿 → cargo test
 rasq test                  # cargo test だけ
-rasq build --raw --no-sign # dist/sample.media-fullscreen-0.2.0.rasqpkg と dist/media_fullscreen_plugin.wasm
-rasq inspect dist/sample.media-fullscreen-0.2.0.rasqpkg
+rasq build --raw --no-sign # dist/sample.media-fullscreen-0.2.1.rasqpkg と dist/media_fullscreen_plugin.wasm
+rasq inspect dist/sample.media-fullscreen-0.2.1.rasqpkg
 ```
 
 ```
@@ -82,9 +102,9 @@ plugins/media-fullscreen-plugin:
 $ cargo test
 ... test result: ok. 10 passed; 0 failed
 
-$ rasq inspect dist/sample.media-fullscreen-0.2.0.rasqpkg
+$ rasq inspect dist/sample.media-fullscreen-0.2.1.rasqpkg
 bundle: rasq.bundle/1 sdk 0.1.0
-root:   sample.media-fullscreen 0.2.0 (mediaViewer)
+root:   sample.media-fullscreen 0.2.1 (mediaViewer)
 files:  bundle.json / manifest.json / media_fullscreen_plugin.wasm / SHA512SUMS
 目次と中身: ok
 ```
@@ -122,8 +142,9 @@ rasq call media-fullscreen-plugin viewer.open --args @/tmp/open.json \
 1. `rasq build --raw --no-sign` のあと、出力の最後の行が出す `dist/` の**絶対パス**を控える。
 2. rasq-client のカタログ →「WASMプラグイン試験 (dev)」→ `.wasm` のパスからインポート → **スロットに登録**
    (権限 `fow.widget` / `mute.words` を許可)。
-3. TL などで QR コードが写っている画像(PNG / JPEG)を全画面ビューワーで開き、ヘッダーの
-   全画面アクションバーの「QR コード検出」を ON にする。
+3. TL などで QR コードが写っている画像(PNG / JPEG)を全画面ビューワーで開く。ヘッダーの
+   全画面アクションバーの「QR コード検出」は `auto: true` なので**開いた時点でオン**になっている
+   (押すとこの全画面だけオフ。次に開くとまたオン)。
 4. QR の上に水色の枠が出るのでタップ → 下に FOW「QR コード」が出る。
 5. 「コピー」「ブラウザで開く」「このリンクをミュート」を押すとトーストが出る
    (ミュートはホストの確認ダイアログ経由)。「閉じる」または ✕ で FOW を閉じる。
@@ -131,7 +152,7 @@ rasq call media-fullscreen-plugin viewer.open --args @/tmp/open.json \
 
 ## 掲載(審査)に出す
 
-`rasq build` が出す `dist/sample.media-fullscreen-0.1.0.rasqpkg` が**そのまま掲載できる形**
+`rasq build` が出す `dist/sample.media-fullscreen-0.2.1.rasqpkg` が**そのまま掲載できる形**
 (zstd tar + `bundle.json` `rasq.bundle/1` + `SHA512SUMS`)。
 
 ```sh
