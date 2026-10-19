@@ -47,10 +47,11 @@ check:
 build:
   extends: .rasq
   stage: build
-  # dist/<id>-<version>.rasqpkg と生の .wasm(D-168 の今のホスト向け)
+  # dist/<id>-<version>.rspkg と生の .wasm(D-168 の今のホスト向け)。旧来の CLI は .rasqpkg で書き出す
   script:
     - rasq build --raw --no-sign
-    - for f in dist/*.rasqpkg; do rasq inspect "$f"; done
+    - ls dist/*.rspkg dist/*.rasqpkg 2>/dev/null | grep -q . || { echo "dist/ に配布物(.rspkg / .rasqpkg)がありません"; exit 1; }
+    - for f in dist/*.rspkg dist/*.rasqpkg; do if [ -e "$f" ]; then rasq inspect "$f" || exit 1; fi; done
   artifacts:
     paths:
       - dist/
