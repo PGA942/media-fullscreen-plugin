@@ -22,7 +22,7 @@ plugins/media-fullscreen-plugin/
   manifest.json      plugin.manifest の答えそのもの
   src/lib.rs         include_str!("../manifest.json") + handle の match + #[cfg(test)]
   tests/fixtures/    rasq call 用の画像(qr-url.png)
-dist/                rasq build --raw --no-sign の出力(.rasqpkg と生の .wasm)
+dist/                rasq build --raw --no-sign の出力(.rspkg と生の .wasm)
 ```
 
 マニフェストは **`plugins/media-fullscreen-plugin/manifest.json` の 1 か所**。`src/lib.rs` は
@@ -43,7 +43,7 @@ dist/                rasq build --raw --no-sign の出力(.rasqpkg と生の .wa
 
 ```
 ホスト                                   プラグイン
-viewer.open {token, mimeType, width,     → base64 を復号 → 輝度化 → 長辺 800 に縮小
+viewer.open {token, mimeType, width,     → base64 を復号 → 輝度化(整数)→ 長辺 1024 を超えるときだけ縮小
              height, bytesB64}             → rqrr で検出 → 枠を width/height 画素系に戻す
                                          ← {root: Stack[ Box(qr-0, left/top/width/height, on.tap = qr.0), … ]}
                                             (QR が無い / 画像でない / bytesB64 が無い → {})
@@ -59,6 +59,10 @@ viewer.close {token}                     → FOW を閉じて状態を捨てる 
   それ以外は「文字列(URL ではありません)」として生テキストを出す。
 - 座標系はホストが `viewer.open` で渡す `width/height`(ホストが長辺 1024 に縮小した後の画素数)。
   表示倍率への拡縮はホスト側。
+- 重さ: ホストは全画面表示プラグインに画像処理の fuel 予算(rasq-client D-519、`composer.media` と同じ 6 G)を渡す。
+  長辺 1024 の画像 1 枚の `viewer.open` はおよそ 4〜8 億 fuel(平らな画像〜写真。写真の PNG は復号が重い)。0.2.1 までは
+  800 への縮小と浮動小数の輝度化があり、平らな画像でも 8〜10 億かかっていた。
+  ビットマップを触らない種別の予算(5000 万)では足りない。
 - 安全側: 4096×4096 画素を超える画像は復号せず `{}`、壊れた base64 / 画像は `D01`。枠は最大 16 個。
 - ボタンの状態(処理中 / 検出あり / 検出なし / 失敗)はホストが出す(D-246)。押したときの `call` は無い
   — ホストが ON / OFF を持ち、ON のときだけ `viewer.open` に画像を渡す。
@@ -89,8 +93,8 @@ viewer.close {token}                     → FOW を閉じて状態を捨てる 
 ```sh
 rasq check                 # wasm32 ビルド → export 検査 → plugin.manifest 往復 → スキーマ / 登録簿 → cargo test
 rasq test                  # cargo test だけ
-rasq build --raw --no-sign # dist/sample.media-fullscreen-0.2.1.rasqpkg と dist/media_fullscreen_plugin.wasm
-rasq inspect dist/sample.media-fullscreen-0.2.1.rasqpkg
+rasq build --raw --no-sign # dist/sample.media-fullscreen-0.2.2.rspkg と dist/media_fullscreen_plugin.wasm
+rasq inspect dist/sample.media-fullscreen-0.2.2.rspkg
 ```
 
 ```
@@ -102,9 +106,9 @@ plugins/media-fullscreen-plugin:
 $ cargo test
 ... test result: ok. 10 passed; 0 failed
 
-$ rasq inspect dist/sample.media-fullscreen-0.2.1.rasqpkg
+$ rasq inspect dist/sample.media-fullscreen-0.2.2.rspkg
 bundle: rasq.bundle/1 sdk 0.1.0
-root:   sample.media-fullscreen 0.2.1 (mediaViewer)
+root:   sample.media-fullscreen 0.2.2 (mediaViewer)
 files:  bundle.json / manifest.json / media_fullscreen_plugin.wasm / SHA512SUMS
 目次と中身: ok
 ```
@@ -152,7 +156,7 @@ rasq call media-fullscreen-plugin viewer.open --args @/tmp/open.json \
 
 ## 掲載(審査)に出す
 
-`rasq build` が出す `dist/sample.media-fullscreen-0.2.1.rasqpkg` が**そのまま掲載できる形**
+`rasq build` が出す `dist/sample.media-fullscreen-0.2.2.rspkg` が**そのまま掲載できる形**
 (zstd tar + `bundle.json` `rasq.bundle/1` + `SHA512SUMS`)。
 
 ```sh

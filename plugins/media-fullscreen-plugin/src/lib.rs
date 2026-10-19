@@ -29,7 +29,10 @@ fn manifest() -> Value {
 }
 
 /// 検出時にこの長辺まで縮小してから探す(速度のため。座標は元の `width/height` 画素系に戻す)。
-const DETECT_MAX_SIDE: u32 = 800;
+/// ホストは長辺 1024 で渡す約束なので、ホストから来た画像は**縮めない**(D-519)。以前は 800 で、毎回 1024 → 800 の
+/// 縮小(Triangle)をしていた。wasm のインタープリタではこれが一番重く(復号・検出を合わせたぶんより重い)、
+/// 縮めたぶん小さな QR を見落としやすくもなっていた。
+const DETECT_MAX_SIDE: u32 = 1024;
 /// これより大きい画像は復号せずに諦める(wasm の線形メモリを守る。ホストは長辺 1024 で渡す約束)。
 const MAX_SOURCE_PIXELS: u64 = 4096 * 4096;
 /// 見つけた QR の上限(枠の数)。
@@ -122,7 +125,7 @@ fn viewer_open(args: &Value) -> Result<Value, Value> {
     let out_w = args["width"].as_f64().filter(|v| *v > 0.0).unwrap_or(src_w as f64);
     let out_h = args["height"].as_f64().filter(|v| *v > 0.0).unwrap_or(src_h as f64);
 
-    let codes = detect_codes(img.to_luma8(), out_w, out_h);
+    let codes = detect_codes(to_luma(img), out_w, out_h);
     if codes.is_empty() {
         return Ok(json!({}));
     }
@@ -144,6 +147,25 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
         .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(&cleaned))
         .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&cleaned))
         .ok()
+}
+
+/// 輝度(グレー)にする。RGB / RGBA は整数だけで(`to_luma8` は画素ごとに浮動小数の計算をするので、wasm の
+/// インタープリタでは重い。ホストは RGBA の PNG で渡す)。係数は `image` と同じ Rec.709(0.2126 / 0.7152 / 0.0722)。
+fn to_luma(img: image::DynamicImage) -> image::GrayImage {
+    fn from_channels(w: u32, h: u32, raw: &[u8], channels: usize) -> image::GrayImage {
+        let mut out = Vec::with_capacity((w as usize) * (h as usize));
+        for px in raw.chunks_exact(channels) {
+            let (r, g, b) = (px[0] as u32, px[1] as u32, px[2] as u32);
+            out.push(((r * 2126 + g * 7152 + b * 722 + 5000) / 10000) as u8);
+        }
+        image::GrayImage::from_raw(w, h, out).expect("buffer size matches")
+    }
+    match img {
+        image::DynamicImage::ImageLuma8(l) => l,
+        image::DynamicImage::ImageRgba8(rgba) => from_channels(rgba.width(), rgba.height(), rgba.as_raw(), 4),
+        image::DynamicImage::ImageRgb8(rgb) => from_channels(rgb.width(), rgb.height(), rgb.as_raw(), 3),
+        other => other.to_luma8(),
+    }
 }
 
 /// 輝度画像から QR を探し、枠を `out_w × out_h` の画素系に写して返す。
@@ -547,7 +569,7 @@ mod tests {
         assert!(call_native("qr.0", json!({})).is_err(), "codes cleared after close");
     }
 
-    /// 長辺 > 800 の画像は縮小して検出し、枠は元の width/height 画素系に戻る。
+    /// 長辺 > 1024(DETECT_MAX_SIDE)の画像は縮小して検出し、枠は元の width/height 画素系に戻る。
     #[test]
     fn large_image_is_downscaled_and_mapped_back() {
         let _g = lock();
@@ -572,6 +594,61 @@ mod tests {
             assert!((got - want).abs() <= tol, "{name}: got {got}, want {want} ±{tol} (box {p})");
         }
         call_native("viewer.close", json!({"token": "tok-2"})).unwrap();
+    }
+
+    /// ホストが渡す形(長辺 1024 の RGBA の PNG)は縮めずに探す: 1 モジュール 3 画素の小さな QR も見つかる
+    /// (以前は 800 へ縮めていて 2.3 画素になり、見落としやすかった)。
+    #[test]
+    fn host_sized_image_is_not_downscaled() {
+        let _g = lock();
+        let code = qrcode::QrCode::new(URL.as_bytes()).unwrap();
+        let n = code.width() as u32;
+        let colors = code.to_colors();
+        let (module, ox, oy) = (3u32, 700u32, 120u32);
+        let mut canvas = ImageBuffer::from_pixel(1024, 768, Rgba([250u8, 248, 240, 255]));
+        for y in 0..n {
+            for x in 0..n {
+                if colors[(y * n + x) as usize] == qrcode::Color::Dark {
+                    for dy in 0..module {
+                        for dx in 0..module {
+                            canvas.put_pixel(ox + x * module + dx, oy + y * module + dy, Rgba([20, 20, 30, 255]));
+                        }
+                    }
+                }
+            }
+        }
+        let b64 = png_b64(&image::DynamicImage::ImageRgba8(canvas));
+        let args = json!({"token": "tok-3", "url": "x", "mimeType": "image/png", "width": 1024, "height": 768, "bytesB64": b64});
+        let res = call_native("viewer.open", args).unwrap();
+        let p = &res["root"]["c"][0]["p"];
+        assert!(p.is_object(), "small QR must be detected: {res}");
+        let tol = 6.0;
+        for (name, got, want) in [
+            ("left", p["left"].as_f64().unwrap(), ox as f64),
+            ("top", p["top"].as_f64().unwrap(), oy as f64),
+            ("width", p["width"].as_f64().unwrap(), (module * n) as f64),
+        ] {
+            assert!((got - want).abs() <= tol, "{name}: got {got}, want {want} ±{tol} (box {p})");
+        }
+        call_native("viewer.close", json!({"token": "tok-3"})).unwrap();
+    }
+
+    /// 整数の輝度化は `image` の `to_luma8` と ±1 で一致する(RGB / RGBA / グレー)。
+    #[test]
+    fn integer_luma_matches_image_crate() {
+        let mut rgba = ImageBuffer::new(64, 4);
+        for (x, y, p) in rgba.enumerate_pixels_mut() {
+            *p = Rgba([(x * 4) as u8, (255 - x * 3) as u8, (y * 60 + x) as u8, (x * 2) as u8]);
+        }
+        let dynimg = image::DynamicImage::ImageRgba8(rgba);
+        for img in [dynimg.clone(), image::DynamicImage::ImageRgb8(dynimg.to_rgb8()), image::DynamicImage::ImageLuma8(dynimg.to_luma8())] {
+            let want = img.to_luma8();
+            let got = to_luma(img);
+            assert_eq!(got.dimensions(), want.dimensions());
+            for (a, b) in got.pixels().zip(want.pixels()) {
+                assert!((a.0[0] as i32 - b.0[0] as i32).abs() <= 1, "luma {} vs {}", a.0[0], b.0[0]);
+            }
+        }
     }
 
     #[test]
