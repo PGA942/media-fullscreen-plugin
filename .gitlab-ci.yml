@@ -50,7 +50,7 @@ build:
   # dist/<id>-<version>.rspkg と生の .wasm(D-168 の今のホスト向け)。旧来の CLI は .rasqpkg で書き出す
   script:
     - rasq build --raw --no-sign
-    - ls dist/*.rspkg dist/*.rasqpkg 2>/dev/null | grep -q . || { echo "dist/ に配布物(.rspkg / .rasqpkg)がありません"; exit 1; }
+    - test -n "$(find dist -maxdepth 1 \( -name '*.rspkg' -o -name '*.rasqpkg' \) -print -quit)" || { echo "dist/ に配布物(.rspkg / .rasqpkg)がありません"; exit 1; }
     - for f in dist/*.rspkg dist/*.rasqpkg; do if [ -e "$f" ]; then rasq inspect "$f" || exit 1; fi; done
   artifacts:
     paths:
