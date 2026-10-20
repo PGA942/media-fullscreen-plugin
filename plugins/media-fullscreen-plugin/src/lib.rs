@@ -17,11 +17,14 @@
 
 use base64::Engine;
 use rasq_plugin_kit::{
-    err, fow_spec, host, rasq_plugin, rrl,
+    err, fow_spec, host, i18n, rasq_plugin, rrl,
     serde_json::{json, Value},
     unsupported, Surface,
 };
 use std::sync::Mutex;
+
+mod text;
+use text::TEXT;
 
 /// `plugin.manifest` の答え = `manifest.json`(名前 / 版 / 説明 / 権限 / ボタン宣言はあちらを直す)。
 fn manifest() -> Value {
@@ -80,7 +83,7 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 // ---------------------------------------------------------------------------
 
 fn root() -> Value {
-    rrl::column("root", vec![rrl::text("hello", "QR コード検出(viewer.overlay)")])
+    rrl::column("root", vec![rrl::text("hello", TEXT.t(&i18n::current(), "root.hello"))])
 }
 
 // ---------------------------------------------------------------------------
@@ -269,30 +272,30 @@ fn ellipsize(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn fow_root(d: &Detected) -> Value {
+fn fow_root(loc: &str, d: &Detected) -> Value {
     let host_name = url_host(&d.text);
     let mut children = vec![];
     match &host_name {
         Some(h) => {
-            children.push(rrl::styled_text("qr-kind", "リンク", 12.0, false, Some("#888888")));
+            children.push(rrl::styled_text("qr-kind", TEXT.t(loc, "fow.kindLink"), 12.0, false, Some("#888888")));
             let mut link = rrl::styled_text("qr-content", ellipsize(&d.text, 400), 15.0, false, Some(COLOR_LINK));
             link["on"] = json!({"tap": "qr.browser"});
             children.push(link);
-            children.push(rrl::styled_text("qr-host", format!("ホスト: {h}"), 12.0, false, Some("#888888")));
+            children.push(rrl::styled_text("qr-host", TEXT.f(loc, "fow.host", &[("host", h)]), 12.0, false, Some("#888888")));
         }
         None => {
-            children.push(rrl::styled_text("qr-kind", "文字列(URL ではありません)", 12.0, false, Some("#888888")));
+            children.push(rrl::styled_text("qr-kind", TEXT.t(loc, "fow.kindText"), 12.0, false, Some("#888888")));
             children.push(rrl::styled_text("qr-content", ellipsize(&d.text, 400), 15.0, false, None));
         }
     }
     children.push(rrl::spacer("qr-sp", 8.0));
-    children.push(rrl::button("qr-copy", "コピー", "qr.copy"));
+    children.push(rrl::button("qr-copy", TEXT.t(loc, "fow.copy"), "qr.copy"));
     if host_name.is_some() {
-        children.push(rrl::button("qr-browser", "ブラウザで開く", "qr.browser"));
+        children.push(rrl::button("qr-browser", TEXT.t(loc, "fow.openBrowser"), "qr.browser"));
     }
-    let mute_label = if host_name.is_some() { "このリンクをミュート" } else { "この文字列をミュート" };
+    let mute_label = if host_name.is_some() { TEXT.t(loc, "fow.muteLink") } else { TEXT.t(loc, "fow.muteText") };
     children.push(rrl::button("qr-mute", mute_label, "qr.mute"));
-    children.push(rrl::button("qr-close", "閉じる", "qr.close"));
+    children.push(rrl::button("qr-close", TEXT.t(loc, "fow.close"), "qr.close"));
     rrl::column("qr-root", children)
 }
 
@@ -305,7 +308,8 @@ fn qr_tap(index: usize) -> Result<Value, Value> {
         st.selected = Some(index);
         (d, st.token.clone(), overlay_root(&st.codes, Some(index)))
     };
-    let opened = FOW.open(fow_spec("QR コード", 0.4), fow_root(&d), Some("qr.closed"), json!({}));
+    let loc = i18n::current();
+    let opened = FOW.open(fow_spec(TEXT.t(&loc, "fow.title"), 0.4), fow_root(&loc, &d), Some("qr.closed"), json!({}));
     state().fow_open = opened;
     // 選ばれた枠を強調(古いホストでは E01 が返るだけ)。
     host::viewer_overlay_set(&token, root);
@@ -320,7 +324,7 @@ fn selected_code() -> Result<Detected, Value> {
 fn qr_copy() -> Result<Value, Value> {
     let d = selected_code()?;
     host::clipboard_set(&d.text);
-    host::toast("コピーしました");
+    host::toast(TEXT.t(&i18n::current(), "toast.copied"));
     Ok(json!({}))
 }
 
@@ -330,14 +334,14 @@ fn qr_browser() -> Result<Value, Value> {
         return Err(err("D01", "not an http(s) URL"));
     }
     host::url_open(&d.text);
-    host::toast("ブラウザで開きます");
+    host::toast(TEXT.t(&i18n::current(), "toast.opening"));
     Ok(json!({}))
 }
 
 fn qr_mute() -> Result<Value, Value> {
     let d = selected_code()?;
     host::mute_add(&d.text); // ホストが mute.words の確認を出してから追加する
-    host::toast("ミュート語に追加を依頼しました");
+    host::toast(TEXT.t(&i18n::current(), "toast.muteRequested"));
     Ok(json!({}))
 }
 
@@ -649,6 +653,37 @@ mod tests {
                 assert!((a.0[0] as i32 - b.0[0] as i32).abs() <= 1, "luma {} vs {}", a.0[0], b.0[0]);
             }
         }
+    }
+
+    /// `args.locale` の言語で FOW の文とトーストを出す(無い言語は ja)。
+    #[test]
+    fn texts_follow_locale() {
+        let _g = lock();
+        let _ = i18n::take_misses();
+        let (b64, _) = qr_canvas_b64(URL);
+        set_host_hook(|f, _| if f == "fow.open" { json!({"opened": true}) } else { json!({}) });
+        take_host_log();
+        call_native("viewer.open", open_args(&b64, "image/png")).unwrap();
+        call_native("qr.0", json!({"nodeId": "x", "kind": "tap", "locale": "en"})).unwrap();
+        let log = take_host_log();
+        let fow = log.iter().find(|(f, _)| f == "fow.open").unwrap();
+        assert_eq!(fow.1["spec"]["title"], json!("QR code"));
+        let s = fow.1["root"].to_string();
+        assert!(s.contains("Host: example.com") && s.contains("Open in browser") && s.contains("Mute this link"), "{s}");
+        call_native("qr.copy", json!({"locale": "zh-Hant"})).unwrap();
+        let log = take_host_log();
+        assert!(log.iter().any(|(f, a)| f == "toast" && a["message"] == json!("已複製")), "{log:?}");
+        call_native("qr.mute", json!({"locale": "ko"})).unwrap();
+        let log = take_host_log();
+        assert!(log.iter().any(|(f, a)| f == "toast" && a["message"] == json!("뮤트 단어에 추가를 요청했습니다")), "{log:?}");
+        call_native("qr.close", json!({"locale": "zh-Hans"})).unwrap();
+        call_native("qr.0", json!({"locale": "zh-Hans"})).unwrap();
+        let log = take_host_log();
+        let fow = log.iter().find(|(f, _)| f == "fow.open").unwrap();
+        assert_eq!(fow.1["spec"]["title"], json!("二维码"));
+        call_native("viewer.close", json!({"token": "tok-1"})).unwrap();
+        take_host_log();
+        assert!(i18n::take_misses().is_empty());
     }
 
     #[test]
