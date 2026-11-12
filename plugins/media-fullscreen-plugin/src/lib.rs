@@ -244,22 +244,56 @@ fn overlay_root(codes: &[Detected], selected: Option<usize>) -> Value {
 // qr.<i>: FOW「QR コード」
 // ---------------------------------------------------------------------------
 
-/// `http(s)://` で始まれば `Some(host)`。
+/// 開いてよい `http(s)://` の URL なら、確認欄に出す `Some(host[:port])`(小文字)。
+///
+/// 確認欄の Host と、ホストが実際に開く先(rasq-client は Dart の `Uri`、その先はブラウザーの WHATWG URL)が
+/// 食い違わないよう、**どのパーサーでも同じ host に読める形だけ**を通す(2026-11-11 の監査 #7)。
+/// 例えば `https://evil.example\@trusted.example/` は、`@` の後ろを host と読むと trusted.example だが、
+/// Dart / WHATWG は `\` を `/` と同じに扱って evil.example を開く。そこで次を含むものは URL として扱わない
+/// (テキストとしてコピー・ミュートはできる、開くボタンは出さない):
+/// - バックスラッシュ、空白・制御文字(WHATWG はタブ・改行を黙って取り除く)
+/// - authority の userinfo(`@`)と `%`(パーセント符号化した host は正規化で別の名前になる)
+/// - ASCII の英数字・`.`・`-` 以外の host(IDN は Punycode にされて見た目と変わる)、角括弧の IPv6 は 16 進と `:` `.` だけ
+/// - 数字でない / 範囲外のポート
 fn url_host(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    let rest = if lower.starts_with("https://") {
-        &text[8..]
-    } else if lower.starts_with("http://") {
-        &text[7..]
-    } else {
-        return None;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    if host.is_empty() || host.chars().any(char::is_whitespace) {
+    if text.chars().any(|c| c == '\\' || c.is_whitespace() || c.is_control()) {
         return None;
     }
-    Some(host.to_string())
+    let lower = text.to_ascii_lowercase();
+    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains(['@', '%']) {
+        return None;
+    }
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (inner, after) = v6.split_once(']')?;
+        if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.') {
+            return None;
+        }
+        let port = match after {
+            "" => None,
+            p => Some(p.strip_prefix(':')?),
+        };
+        (&authority[..inner.len() + 2], port)
+    } else {
+        let (host, port) = match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        };
+        if host.is_empty() || !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+            return None;
+        }
+        (host, port)
+    };
+    if let Some(p) = port {
+        if p.is_empty() || p.len() > 5 || !p.chars().all(|c| c.is_ascii_digit()) || p.parse::<u32>().ok()? > 65535 {
+            return None;
+        }
+    }
+    Some(match port {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    })
 }
 
 /// 表示用に長い文字列を切る。
@@ -756,9 +790,57 @@ mod tests {
     #[test]
     fn url_host_parsing() {
         assert_eq!(url_host("https://example.com/a?b#c").as_deref(), Some("example.com"));
-        assert_eq!(url_host("HTTP://user@Host.jp:8080/").as_deref(), Some("Host.jp:8080"));
+        assert_eq!(url_host("HTTP://Host.jp:8080/").as_deref(), Some("host.jp:8080"));
+        assert_eq!(url_host("https://[2001:DB8::1]:443/x").as_deref(), Some("[2001:db8::1]:443"));
+        assert_eq!(url_host("https://example.com?q=a@b").as_deref(), Some("example.com"));
         assert_eq!(url_host("ftp://x"), None);
         assert_eq!(url_host("https://"), None);
         assert_eq!(url_host("hello"), None);
+    }
+
+    #[test]
+    fn url_host_refuses_urls_that_parsers_read_differently() {
+        // 監査 #7: 確認欄は trusted.example、Dart の Uri / ブラウザーは evil.example を開いていた。
+        for text in [
+            "https://evil.example\\@trusted.example/",
+            "https://evil.example\\trusted.example/",
+            "https://user@trusted.example/",
+            "https://evil.example@trusted.example/",
+            "https://user:pw@trusted.example/",
+            "https://trusted.example%2eevil.example/",
+            "https://evil.example\ttrusted.example/",
+            "https://evil.example\n.trusted.example/",
+            "https://trusted.example /",
+            "https://例え.jp/",
+            "https://trusted.example:443x/",
+            "https://trusted.example:99999/",
+            "https://trusted.example:/",
+            "https://[::1/",
+            "https://[]/",
+            "https://[::1]x/",
+        ] {
+            assert_eq!(url_host(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn ambiguous_url_qr_is_shown_as_text_and_never_opened() {
+        // 監査 #7 の QR を通しで: 確認欄に trusted.example の Host を出さず、開くボタンも出さず、
+        // qr.browser を直に叩いても url.open を呼ばない。
+        let _g = lock();
+        let evil = "https://evil.example\\@trusted.example/";
+        let (b64, _) = qr_canvas_b64(evil);
+        set_host_hook(|f, _| if f == "fow.open" { json!({"opened": true}) } else { json!({}) });
+        take_host_log();
+        call_native("viewer.open", open_args(&b64, "image/png")).unwrap();
+        call_native("qr.0", json!({})).unwrap();
+        let log = take_host_log();
+        let fow = log.iter().find(|(f, _)| f == "fow.open").unwrap();
+        let s = fow.1["root"].to_string();
+        assert!(!s.contains("qr-host"), "no Host line for an ambiguous URL: {s}");
+        assert!(!s.contains("qr.browser"), "no browser button for an ambiguous URL: {s}");
+        assert!(call_native("qr.browser", json!({})).is_err());
+        assert!(!take_host_log().iter().any(|(f, _)| f == "url.open"));
+        call_native("viewer.close", json!({"token": "tok-1"})).unwrap();
     }
 }
